@@ -1,9 +1,22 @@
-# Cloud-code 破解版
+# Claude Code 源码还原与构建
 
-## 还原方法
+从 `@anthropic-ai/claude-code` v2.1.88 npm 包中的 `cli.js.map` source map 文件还原出的完整源代码，并配置为可编译运行。
+
+## 效果验证
+
+```
+$ bun dist/cli.js --version
+2.1.88 (Claude Code)
+
+$ bun dist/cli.js --help
+Usage: claude [options] [command] [prompt]
+Claude Code - starts an interactive session by default...
+```
+
+## 源码还原方法
 
 ```bash
-# 1. 从 npm 下载包
+# 1. 下载 npm 包
 npm pack @anthropic-ai/claude-code --registry https://registry.npmjs.org
 
 # 2. 解压
@@ -11,8 +24,7 @@ tar xzf anthropic-ai-claude-code-2.1.88.tgz
 
 # 3. 解析 cli.js.map，将 sourcesContent 按原始路径写出
 node -e "
-const fs = require('fs');
-const path = require('path');
+const fs = require('fs'), path = require('path');
 const map = JSON.parse(fs.readFileSync('package/cli.js.map', 'utf8'));
 const outDir = './claude-code-source';
 for (let i = 0; i < map.sources.length; i++) {
@@ -27,85 +39,156 @@ for (let i = 0; i < map.sources.length; i++) {
 "
 ```
 
-source map 中包含 **4756** 个源文件及其完整源码（`sourcesContent`），可以无损还原所有 TypeScript/TSX 原始代码。
+source map 包含 **4756** 个源文件及完整 `sourcesContent`，可无损还原所有 TypeScript/TSX 原始代码。
+
+## 构建环境搭建
+
+### 依赖
+
+| 工具 | 用途 |
+|------|------|
+| [Bun](https://bun.sh) v1.3.11 | 构建工具（源码使用 `bun:bundle` 特性） |
+| [pnpm](https://pnpm.io) v10+ | 包管理 |
+| Node.js v18+ | 运行时 |
+
+### 安装步骤
+
+```bash
+# 1. 安装 Bun（macOS arm64）
+curl -LO https://github.com/oven-sh/bun/releases/latest/download/bun-darwin-aarch64.zip
+unzip bun-darwin-aarch64.zip
+
+# 2. 安装依赖（pnpm + npm registry）
+pnpm install --registry https://registry.npmjs.org
+
+# 3. 构建
+bun run build.ts
+
+# 4. 运行
+bun dist/cli.js --version
+```
+
+## 构建说明
+
+### 为什么需要 Bun？
+
+源码中大量使用了 `bun:bundle` 的 `feature()` API：
+
+```typescript
+import { feature } from 'bun:bundle'
+
+// 编译期特性开关，Bun 构建时进行死代码消除
+const coordinatorModule = feature('COORDINATOR_MODE')
+  ? require('./coordinator/coordinatorMode.js')
+  : null
+```
+
+这是 Bun bundler 的专有特性，等价于 webpack 的 `DefinePlugin`，在构建时静态替换为 `true`/`false` 并消除死分支。
+
+### 特性开关配置
+
+`build.ts` 中定义了 90+ 个特性开关，均已按**生产外部版本**的默认值设置：
+
+```typescript
+const featureFlags = {
+  BRIDGE_MODE: false,        // IDE 桥接（生产关闭）
+  COORDINATOR_MODE: false,   // 多代理协调（内部功能）
+  KAIROS: false,             // 助手模式（内部功能）
+  BUILTIN_EXPLORE_PLAN_AGENTS: true,  // 内置探索/计划代理（启用）
+  TOKEN_BUDGET: true,        // Token 预算显示（启用）
+  // ...等 80+ 个开关
+}
+```
+
+### MACRO 常量注入
+
+源码使用 `MACRO.VERSION` 等编译期常量（类似 C 语言的宏）：
+
+```typescript
+console.log(`${MACRO.VERSION} (Claude Code)`)  // → "2.1.88 (Claude Code)"
+```
+
+在 `build.ts` 中通过 `define` 注入：
+
+```typescript
+define: {
+  'MACRO.VERSION': JSON.stringify('2.1.88'),
+  'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
+  'MACRO.ISSUES_EXPLAINER': JSON.stringify('...'),
+  // ...
+}
+```
+
+### 私有包处理
+
+以下内部包不在公开 npm 中，已创建功能存根：
+
+| 包名 | 说明 |
+|------|------|
+| `color-diff-napi` | 语法高亮 native 模块（存根：禁用高亮） |
+| `modifiers-napi` | macOS 按键修饰符 native 模块（存根：返回空） |
+| `@ant/claude-for-chrome-mcp` | Chrome 扩展 MCP 服务器（存根） |
+| `@anthropic-ai/mcpb` | MCP bundle 处理器（存根） |
+| `@anthropic-ai/sandbox-runtime` | 沙盒运行时（存根） |
+
+### commander 兼容性补丁
+
+源码使用 `-d2e` 作为调试标志的短选项（多字符短选项），但 commander v14 只允许单字符短选项。
+已对 `node_modules/commander/lib/option.js` 做最小化补丁，将正则从 `/^-[^-]$/` 改为 `/^-[^-]+$/`。
 
 ## 目录结构
 
 ```
 .
 ├── src/                  # 核心源码（1902 个文件）
-│   ├── main.tsx          # 应用入口
-│   ├── Tool.ts           # 工具基类
+│   ├── entrypoints/
+│   │   └── cli.tsx       # ← 构建入口点
+│   ├── main.tsx          # 主 REPL 逻辑（由 cli.tsx 动态 import）
+│   ├── Tool.ts           # 工具类型系统
 │   ├── Task.ts           # 任务管理
 │   ├── QueryEngine.ts    # 查询引擎
-│   ├── commands.ts       # 命令注册
-│   ├── tools.ts          # 工具注册
 │   ├── assistant/        # 会话历史管理
-│   ├── bootstrap/        # 启动初始化
-│   ├── bridge/           # 桥接层（31 个文件）
+│   ├── bridge/           # IDE 桥接层（31）
 │   ├── buddy/            # 子代理系统（6）
-│   ├── cli/              # CLI 参数解析与入口（19）
-│   ├── commands/         # 斜杠命令实现（207）
-│   ├── components/       # 终端 UI 组件，基于 Ink（389）
-│   ├── constants/        # 共享常量（21）
+│   ├── cli/              # CLI 参数解析（19）
+│   ├── commands/         # 斜杠命令（207）
+│   ├── components/       # 终端 UI 组件（389）
+│   ├── constants/        # 全局常量（21）
 │   ├── context/          # 上下文管理（9）
-│   ├── coordinator/      # Agent 协调器（1）
 │   ├── entrypoints/      # 各类入口点（8）
 │   ├── hooks/            # 生命周期钩子（104）
-│   ├── ink/              # 自定义 Ink 终端渲染引擎（96）
-│   ├── keybindings/      # 快捷键管理（14）
-│   ├── memdir/           # 记忆目录系统（8）
+│   ├── ink/              # 自研终端渲染引擎（96）
+│   ├── keybindings/      # 键盘快捷键（14）
+│   ├── memdir/           # 记忆目录（8）
 │   ├── migrations/       # 数据迁移（11）
-│   ├── moreright/        # 权限系统（1）
-│   ├── native-ts/        # 原生 TS 工具（4）
-│   ├── outputStyles/     # 输出格式化（1）
 │   ├── plugins/          # 插件系统（2）
-│   ├── query/            # 查询处理（4）
 │   ├── remote/           # 远程执行（4）
-│   ├── schemas/          # 数据模式定义（1）
-│   ├── screens/          # 屏幕视图（3）
-│   ├── server/           # Server 模式（3）
 │   ├── services/         # 核心服务（130）
 │   ├── skills/           # 技能系统（20）
 │   ├── state/            # 状态管理（6）
 │   ├── tasks/            # 任务执行（12）
 │   ├── tools/            # 工具实现（184）
-│   ├── types/            # TypeScript 类型定义（11）
-│   ├── upstreamproxy/    # 上游代理支持（2）
+│   ├── types/            # 类型定义（11）
 │   ├── utils/            # 工具函数（564）
 │   ├── vim/              # Vim 模式（5）
 │   └── voice/            # 语音输入（1）
-├── vendor/               # 内部 vendor 代码（4 个文件）
-│   ├── modifiers-napi-src/   # 按键修饰符原生模块
-│   ├── url-handler-src/      # URL 处理
-│   ├── audio-capture-src/    # 音频采集
-│   └── image-processor-src/  # 图片处理
-└── node_modules/         # 打包的第三方依赖（2850 个文件）
+├── vendor/               # 内部 vendor 代码（4 文件）
+├── node_modules/         # 依赖（pnpm 安装 + 私有包存根）
+├── dist/                 # 构建产出
+│   └── cli.js            # 可执行文件（22MB）
+├── build.ts              # Bun 构建脚本（含特性开关配置）
+├── tsconfig.json         # TypeScript 配置
+└── package.json          # 项目配置
 ```
-
-## 核心模块说明
-
-| 模块 | 文件数 | 说明 |
-|------|--------|------|
-| `utils/` | 564 | 工具函数集 — 文件 I/O、Git 操作、权限检查、Diff 处理等 |
-| `components/` | 389 | 终端 UI 组件，基于 Ink（React 的 CLI 版本）构建 |
-| `commands/` | 207 | 斜杠命令实现，如 `/commit`、`/review` 等 |
-| `tools/` | 184 | Agent 工具实现 — Read、Write、Edit、Bash、Glob、Grep 等 |
-| `services/` | 130 | 核心服务 — API 客户端、认证、配置、会话管理等 |
-| `hooks/` | 104 | 生命周期钩子 — 工具执行前后的拦截与权限控制 |
-| `ink/` | 96 | 自研 Ink 渲染引擎，包含布局、焦点管理、渲染优化 |
-| `bridge/` | 31 | 桥接层 — IDE 扩展与 CLI 之间的通信 |
-| `skills/` | 20 | 技能加载与执行系统 |
-| `cli/` | 19 | CLI 参数解析与启动逻辑 |
-| `keybindings/` | 14 | 键盘快捷键绑定与自定义 |
-| `tasks/` | 12 | 后台任务与定时任务管理 |
 
 ## 统计
 
 | 指标 | 数值 |
 |------|------|
 | 源文件总数 | 4,756 |
-| 核心源码（src/ + vendor/） | 1,906 个文件 |
-| 第三方依赖（node_modules/） | 2,850 个文件 |
+| 核心源码（src/ + vendor/） | 1,906 文件 |
+| 第三方依赖（node_modules/） | 2,850 + npm 安装 |
 | Source Map 大小 | 57 MB |
+| 构建产出大小 | 22 MB |
 | 包版本 | 2.1.88 |
+| 特性开关数量 | 90 个 |
