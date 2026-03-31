@@ -1,6 +1,4 @@
-# Claude Code 破解版
-
-从 `@anthropic-ai/claude-code` v2.1.88 npm 包中的 `cli.js.map` source map 文件还原出的完整源代码。
+# Cloud-code 破解版
 
 ## 还原方法
 
